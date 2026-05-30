@@ -18,5 +18,8 @@ public class CorsConfig implements WebMvcConfigurer {
                 .allowedMethods("GET", "POST", "OPTIONS")
                 .allowedHeaders("*")
                 .exposedHeaders("X-Cache-Hit");
+        registry.addMapping("/swagger-ui/**")
+                .allowedOrigins("*")
+                .allowedMethods("GET");
     }
 }

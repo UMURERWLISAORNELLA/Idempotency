@@ -6,6 +6,11 @@ import com.finsafe.gateway.model.PaymentRequest;
 import com.finsafe.gateway.model.PaymentResponse;
 import com.finsafe.gateway.service.IdempotencyService;
 import com.finsafe.gateway.service.PaymentService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +20,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
+@Tag(name = "Payment Gateway", description = "Idempotent payment processing API")
 public class PaymentController {
 
     private final IdempotencyService idempotencyService;
@@ -25,8 +31,18 @@ public class PaymentController {
         this.paymentService = paymentService;
     }
 
+    @Operation(
+        summary = "Process a payment",
+        description = "Processes a payment exactly once. Safe to retry with the same Idempotency-Key."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Payment processed successfully"),
+        @ApiResponse(responseCode = "400", description = "Missing Idempotency-Key header or invalid body"),
+        @ApiResponse(responseCode = "422", description = "Same key used with a different request body")
+    })
     @PostMapping("/process-payment")
     public ResponseEntity<PaymentResponse> processPayment(
+            @Parameter(description = "Unique key per payment attempt (UUID recommended)", required = true)
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody PaymentRequest request) throws InterruptedException {
 
@@ -34,33 +50,27 @@ public class PaymentController {
             throw new MissingIdempotencyKeyException("Idempotency-Key header is required.");
         }
 
-        // Try to register this key — throws 422 on body mismatch
         IdempotencyRecord existing = idempotencyService.getOrCreate(idempotencyKey, request);
 
         if (existing == null) {
-            // Brand new key — process the payment
             PaymentResponse response = paymentService.process(request);
             idempotencyService.complete(idempotencyKey, response);
             return ResponseEntity.status(HttpStatus.CREATED).body(response);
         }
 
         if (existing.getState() == IdempotencyRecord.State.IN_FLIGHT) {
-            // Bonus: duplicate arrived while first is still processing — wait for it
             PaymentResponse response = idempotencyService.waitForCompletion(existing);
             return ResponseEntity.status(existing.getResponse().getHttpStatus())
                     .header("X-Cache-Hit", "true")
                     .body(response);
         }
 
-        // Already completed — return cached response
         return ResponseEntity.status(existing.getResponse().getHttpStatus())
                 .header("X-Cache-Hit", "true")
                 .body(existing.getResponse());
     }
 
-    /**
-     * Dashboard endpoint: returns all stored idempotency records (for the React UI).
-     */
+    @Operation(summary = "List all stored idempotency keys")
     @GetMapping("/keys")
     public ResponseEntity<Object> listKeys() {
         var records = idempotencyService.getStore().entrySet().stream()
